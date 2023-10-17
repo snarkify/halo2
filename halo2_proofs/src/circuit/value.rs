@@ -24,7 +24,7 @@ impl<V> Default for Value<V> {
 }
 
 impl<V> Value<V> {
-    /// unwrap the inner field 
+    /// unwrap the inner field
     pub const fn unwrap(&self) -> &Option<V> {
         &self.inner
     }
