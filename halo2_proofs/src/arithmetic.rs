@@ -139,6 +139,13 @@ pub fn small_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::C
     acc
 }
 
+#[cfg(feature = "cusnark")]
+/// Performs a GPU accelerated multi-exponentiation operation with cuSnark
+pub fn best_multiexp_cusnark<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
+    todo!();
+}
+
+
 /// Performs a multi-exponentiation operation.
 ///
 /// This function will panic if coeffs and bases have a different length.
