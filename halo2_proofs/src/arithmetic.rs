@@ -141,10 +141,9 @@ pub fn small_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::C
 
 #[cfg(feature = "cusnark")]
 /// Performs a GPU accelerated multi-exponentiation operation with cuSnark
-pub fn best_multiexp_cusnark<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
+pub fn cusnark_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
     todo!();
 }
-
 
 /// Performs a multi-exponentiation operation.
 ///
@@ -153,6 +152,10 @@ pub fn best_multiexp_cusnark<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) 
 /// This will use multithreading if beneficial.
 pub fn best_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
     assert_eq!(coeffs.len(), bases.len());
+
+// #[cfg(feature = "cusnark")]
+// prioritize gpu msm and call cusnark_multiexp from here
+// maybe only call cusnark_multiexp if coeffs.len() is large enought?
 
     let num_threads = multicore::current_num_threads();
     if coeffs.len() > num_threads {
