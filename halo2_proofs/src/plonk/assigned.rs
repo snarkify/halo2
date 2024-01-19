@@ -7,8 +7,9 @@ use group::ff::Field;
 /// Stored as a fraction, so the backend can use batch inversion.
 ///
 /// A denominator of zero maps to an assigned value of zero.
-#[derive(Clone, Copy, Debug)]
-pub enum Assigned<F> {
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(bound(serialize = "F: serde::Serialize"))]
+pub enum Assigned<F: Field> {
     /// The field element zero.
     Zero,
     /// A value that does not require inversion to evaluate.

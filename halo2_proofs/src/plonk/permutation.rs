@@ -21,7 +21,7 @@ pub use keygen::Assembly;
 use std::io;
 
 /// A permutation argument.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Argument {
     /// A sequence of columns involved in the argument.
     pub columns: Vec<Column<Any>>,

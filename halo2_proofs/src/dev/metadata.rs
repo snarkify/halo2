@@ -7,7 +7,7 @@ use std::{
     fmt::{self, Debug},
 };
 /// Metadata about a column within a circuit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct Column {
     /// The type of the column.
     pub(super) column_type: Any,
