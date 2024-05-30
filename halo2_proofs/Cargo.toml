@@ -80,6 +80,7 @@ gadget-traces = ["backtrace"]
 sanity-checks = []
 batch = ["rand_core/getrandom"]
 circuit-params = []
+parallel_syn = []
 
 [lib]
 bench = false
