@@ -431,6 +431,21 @@ pub trait Layouter<F: Field> {
         N: Fn() -> NR,
         NR: Into<String>;
 
+    #[cfg(feature = "parallel_syn")]
+    fn assign_regions<A, AR, N, NR>(
+        &mut self,
+        name: N,
+        assignments: Vec<A>,
+    ) -> Result<Vec<AR>, Error>
+    where
+        A: FnMut(Region<'_, F>) -> Result<AR, Error> + Send,
+        AR: Send,
+        N: Fn() -> NR,
+        NR: Into<String>,
+    {
+        todo!()
+    }
+
     /// Assign a table region to an absolute row number.
     ///
     /// ```ignore
