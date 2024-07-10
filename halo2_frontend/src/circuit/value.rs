@@ -117,6 +117,10 @@ impl<V> Value<V> {
             inner: self.inner.zip(other.inner),
         }
     }
+
+    pub fn unwrap(self) -> Option<V> {
+        self.inner
+    }
 }
 
 impl<V, W> Value<(V, W)> {

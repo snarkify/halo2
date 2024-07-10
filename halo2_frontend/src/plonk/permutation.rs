@@ -7,7 +7,7 @@ use halo2_middleware::circuit::{Any, Cell};
 #[derive(Default, Debug, Clone)]
 pub struct Argument {
     /// A sequence of columns involved in the argument.
-    pub(crate) columns: Vec<Column<Any>>,
+    pub columns: Vec<Column<Any>>,
 }
 
 impl Argument {

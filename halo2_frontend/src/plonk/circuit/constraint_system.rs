@@ -288,7 +288,7 @@ pub struct ConstraintSystem<F: Field> {
     pub(crate) fixed_queries: Vec<(Column<Fixed>, Rotation)>,
 
     // Permutation argument for performing equality constraints
-    pub(crate) permutation: permutation::Argument,
+    pub permutation: permutation::Argument,
 
     // Vector of lookup arguments, where each corresponds to a sequence of
     // input expressions and a sequence of table expressions involved in the lookup.
