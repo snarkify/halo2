@@ -388,6 +388,10 @@ impl Selector {
     pub fn is_simple(&self) -> bool {
         self.1
     }
+
+    pub fn index(&self) -> usize {
+        self.0
+    }
 }
 
 /// Query of fixed column at a certain relative location
@@ -1220,6 +1224,7 @@ impl<F: Field> Mul<F> for Expression<F> {
 
 /// Represents an index into a vector where each entry corresponds to a distinct
 /// point that polynomials are queried at.
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct PointIndex(pub usize);
 

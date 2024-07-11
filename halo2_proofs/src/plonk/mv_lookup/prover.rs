@@ -72,7 +72,7 @@ impl<F: PrimeField + WithSmallOrderMulGroup<3> + Ord> Argument<F> {
         fixed_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
         instance_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
         challenges: &'a [C::Scalar],
-        mut rng: R, // in case we want to blind (do we actually need zk?)
+        rng: R, // in case we want to blind (do we actually need zk?)
         transcript: &mut T,
     ) -> Result<Prepared<C>, Error>
     where

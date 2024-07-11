@@ -29,7 +29,7 @@ mod keygen;
 #[allow(dead_code)]
 mod lookup;
 mod mv_lookup;
-pub(crate) mod permutation;
+pub mod permutation;
 mod vanishing;
 
 mod prover;
