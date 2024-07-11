@@ -45,7 +45,7 @@ impl<V> Value<V> {
     /// Obtains the inner value for assigning into the circuit.
     ///
     /// Returns `Error::Synthesis` if this is [`Value::unknown()`].
-    pub(crate) fn assign(self) -> Result<V, Error> {
+    pub fn assign(self) -> Result<V, Error> {
         self.inner.ok_or(Error::Synthesis)
     }
 
@@ -122,6 +122,10 @@ impl<V> Value<V> {
         Value {
             inner: self.inner.zip(other.inner),
         }
+    }
+
+    pub fn unwrap(self) -> Option<V> {
+        self.inner
     }
 }
 

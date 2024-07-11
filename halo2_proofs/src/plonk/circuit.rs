@@ -1406,6 +1406,7 @@ impl<F: Field> Product<Self> for Expression<F> {
 
 /// Represents an index into a vector where each entry corresponds to a distinct
 /// point that polynomials are queried at.
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct PointIndex(pub usize);
 
