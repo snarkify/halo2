@@ -1,3 +1,5 @@
+#![allow(clippy::just_underscores_and_digits)]
+
 use ff::{Field, FromUniformBytes, PrimeField, WithSmallOrderMulGroup};
 use group::Curve;
 use halo2curves::CurveExt;
@@ -9,6 +11,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{collections::HashMap, iter, mem, sync::atomic::Ordering};
+use tracing::*;
 
 use super::{
     circuit::{
@@ -37,6 +40,255 @@ use crate::{
 use ark_std::{end_timer, start_timer};
 use group::prime::PrimeCurveAffine;
 
+struct InstanceSingle<C: CurveAffine> {
+    pub instance_values: Vec<Polynomial<C::Scalar, LagrangeCoeff>>,
+    pub instance_polys: Vec<Polynomial<C::Scalar, Coeff>>,
+}
+
+#[derive(Clone)]
+struct AdviceSingle<C: CurveAffine, B: Basis> {
+    pub advice_polys: Vec<Polynomial<C::Scalar, B>>,
+    pub advice_blinds: Vec<Blind<C::Scalar>>,
+}
+
+struct WitnessCollection<'a, F: Field> {
+    k: u32,
+    current_phase: sealed::Phase,
+    advice_vec: Arc<Vec<Polynomial<Assigned<F>, LagrangeCoeff>>>,
+    advice: Vec<&'a mut [Assigned<F>]>,
+    challenges: &'a HashMap<usize, F>,
+    instances: &'a [&'a [F]],
+    fixed_values: &'a [Polynomial<F, LagrangeCoeff>],
+    rw_rows: Range<usize>,
+    usable_rows: RangeTo<usize>,
+    _marker: std::marker::PhantomData<F>,
+}
+
+impl<'a, F: Field> Assignment<F> for WitnessCollection<'a, F> {
+    fn enter_region<NR, N>(&mut self, _: N)
+    where
+        NR: Into<String>,
+        N: FnOnce() -> NR,
+    {
+        // Do nothing; we don't care about regions in this context.
+    }
+
+    fn exit_region(&mut self) {
+        // Do nothing; we don't care about regions in this context.
+    }
+
+    fn enable_selector<A, AR>(&mut self, _: A, _: &Selector, _: usize) -> Result<(), Error>
+    where
+        A: FnOnce() -> AR,
+        AR: Into<String>,
+    {
+        // We only care about advice columns here
+
+        Ok(())
+    }
+
+    fn fork(&mut self, ranges: &[Range<usize>]) -> Result<Vec<Self>, Error> {
+        let mut range_start = self.rw_rows.start;
+        for (i, sub_range) in ranges.iter().enumerate() {
+            if sub_range.start < range_start {
+                log::error!(
+                    "subCS_{} sub_range.start ({}) < range_start ({})",
+                    i,
+                    sub_range.start,
+                    range_start
+                );
+                return Err(Error::Synthesis);
+            }
+            if i == ranges.len() - 1 && sub_range.end > self.rw_rows.end {
+                log::error!(
+                    "subCS_{} sub_range.end ({}) > self.rw_rows.end ({})",
+                    i,
+                    sub_range.end,
+                    self.rw_rows.end
+                );
+                return Err(Error::Synthesis);
+            }
+            range_start = sub_range.end;
+            log::debug!(
+                "subCS_{} rw_rows: {}..{}",
+                i,
+                sub_range.start,
+                sub_range.end
+            );
+        }
+
+        let advice_ptrs = self
+            .advice
+            .iter_mut()
+            .map(|vec| vec.as_mut_ptr())
+            .collect::<Vec<_>>();
+
+        let mut sub_cs = vec![];
+        for sub_range in ranges {
+            let advice = advice_ptrs
+                .iter()
+                .map(|ptr| unsafe {
+                    std::slice::from_raw_parts_mut(
+                        ptr.add(sub_range.start),
+                        sub_range.end - sub_range.start,
+                    )
+                })
+                .collect::<Vec<&mut [Assigned<F>]>>();
+
+            sub_cs.push(Self {
+                k: 0,
+                current_phase: self.current_phase,
+                advice_vec: self.advice_vec.clone(),
+                advice,
+                challenges: self.challenges,
+                instances: self.instances,
+                fixed_values: self.fixed_values,
+                rw_rows: sub_range.clone(),
+                usable_rows: self.usable_rows,
+                _marker: Default::default(),
+            });
+        }
+
+        Ok(sub_cs)
+    }
+
+    fn merge(&mut self, _sub_cs: Vec<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn annotate_column<A, AR>(&mut self, _annotation: A, _column: Column<Any>)
+    where
+        A: FnOnce() -> AR,
+        AR: Into<String>,
+    {
+        // Do nothing
+    }
+
+    /// Get the last assigned value of a cell.
+    fn query_advice(&self, column: Column<Advice>, row: usize) -> Result<F, Error> {
+        if !self.usable_rows.contains(&row) {
+            return Err(Error::not_enough_rows_available(self.k));
+        }
+        if !self.rw_rows.contains(&row) {
+            log::error!("query_advice: {:?}, row: {}", column, row);
+            return Err(Error::Synthesis);
+        }
+        self.advice
+            .get(column.index())
+            .and_then(|v| v.get(row - self.rw_rows.start))
+            .map(|v| v.evaluate())
+            .ok_or(Error::BoundsFailure)
+    }
+
+    fn query_fixed(&self, column: Column<Fixed>, row: usize) -> Result<F, Error> {
+        self.fixed_values
+            .get(column.index())
+            .and_then(|v| v.get(row))
+            .copied()
+            .ok_or(Error::BoundsFailure)
+    }
+
+    fn query_instance(&self, column: Column<Instance>, row: usize) -> Result<Value<F>, Error> {
+        if !self.usable_rows.contains(&row) {
+            return Err(Error::not_enough_rows_available(self.k));
+        }
+
+        self.instances
+            .get(column.index())
+            .and_then(|column| column.get(row))
+            .map(|v| Value::known(*v))
+            .ok_or(Error::BoundsFailure)
+    }
+
+    fn assign_advice<V, VR, A, AR>(
+        &mut self,
+        _: A,
+        column: Column<Advice>,
+        row: usize,
+        to: V,
+    ) -> Result<(), Error>
+    where
+        V: FnOnce() -> Value<VR>,
+        VR: Into<Assigned<F>>,
+        A: FnOnce() -> AR,
+        AR: Into<String>,
+    {
+        // Ignore assignment of advice column in different phase than current one.
+        if self.current_phase.0 < column.column_type().phase.0 {
+            return Ok(());
+        }
+
+        if !self.usable_rows.contains(&row) {
+            return Err(Error::not_enough_rows_available(self.k));
+        }
+
+        if !self.rw_rows.contains(&row) {
+            log::error!("assign_advice: {:?}, row: {}", column, row);
+            return Err(Error::Synthesis);
+        }
+
+        *self
+            .advice
+            .get_mut(column.index())
+            .and_then(|v| v.get_mut(row - self.rw_rows.start))
+            .ok_or(Error::BoundsFailure)? = to().into_field().assign()?;
+
+        Ok(())
+    }
+
+    fn assign_fixed<V, VR, A, AR>(
+        &mut self,
+        _: A,
+        _: Column<Fixed>,
+        _: usize,
+        _: V,
+    ) -> Result<(), Error>
+    where
+        V: FnOnce() -> Value<VR>,
+        VR: Into<Assigned<F>>,
+        A: FnOnce() -> AR,
+        AR: Into<String>,
+    {
+        // We only care about advice columns here
+
+        Ok(())
+    }
+
+    fn copy(&mut self, _: Column<Any>, _: usize, _: Column<Any>, _: usize) -> Result<(), Error> {
+        // We only care about advice columns here
+
+        Ok(())
+    }
+
+    fn fill_from_row(
+        &mut self,
+        _: Column<Fixed>,
+        _: usize,
+        _: Value<Assigned<F>>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn get_challenge(&self, challenge: Challenge) -> Value<F> {
+        self.challenges
+            .get(&challenge.index())
+            .cloned()
+            .map(Value::known)
+            .unwrap_or_else(Value::unknown)
+    }
+
+    fn push_namespace<NR, N>(&mut self, _: N)
+    where
+        NR: Into<String>,
+        N: FnOnce() -> NR,
+    {
+        // Do nothing; we don't care about namespaces in this context.
+    }
+
+    fn pop_namespace(&mut self, _: Option<String>) {
+        // Do nothing; we don't care about namespaces in this context.
+    }
+}
 /// This creates a proof for the provided `circuit` when given the public
 /// parameters `params` and the proving key [`ProvingKey`] that was
 /// generated previously for the same circuit. The provided `instances`
@@ -76,11 +328,6 @@ where
     // Selector optimizations cannot be applied here; use the ConstraintSystem
     // from the verification key.
     let meta = &pk.vk.cs;
-
-    struct InstanceSingle<C: CurveAffine> {
-        pub instance_values: Vec<Polynomial<C::Scalar, LagrangeCoeff>>,
-        pub instance_polys: Vec<Polynomial<C::Scalar, Coeff>>,
-    }
 
     let instance: Vec<InstanceSingle<Scheme::Curve>> = instances
         .iter()
@@ -137,257 +384,7 @@ where
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    #[derive(Clone)]
-    struct AdviceSingle<C: CurveAffine, B: Basis> {
-        pub advice_polys: Vec<Polynomial<C::Scalar, B>>,
-        pub advice_blinds: Vec<Blind<C::Scalar>>,
-    }
-
-    struct WitnessCollection<'a, F: Field> {
-        k: u32,
-        current_phase: sealed::Phase,
-        advice_vec: Arc<Vec<Polynomial<Assigned<F>, LagrangeCoeff>>>,
-        advice: Vec<&'a mut [Assigned<F>]>,
-        challenges: &'a HashMap<usize, F>,
-        instances: &'a [&'a [F]],
-        fixed_values: &'a [Polynomial<F, LagrangeCoeff>],
-        rw_rows: Range<usize>,
-        usable_rows: RangeTo<usize>,
-        _marker: std::marker::PhantomData<F>,
-    }
-
-    impl<'a, F: Field> Assignment<F> for WitnessCollection<'a, F> {
-        fn enter_region<NR, N>(&mut self, _: N)
-        where
-            NR: Into<String>,
-            N: FnOnce() -> NR,
-        {
-            // Do nothing; we don't care about regions in this context.
-        }
-
-        fn exit_region(&mut self) {
-            // Do nothing; we don't care about regions in this context.
-        }
-
-        fn enable_selector<A, AR>(&mut self, _: A, _: &Selector, _: usize) -> Result<(), Error>
-        where
-            A: FnOnce() -> AR,
-            AR: Into<String>,
-        {
-            // We only care about advice columns here
-
-            Ok(())
-        }
-
-        fn fork(&mut self, ranges: &[Range<usize>]) -> Result<Vec<Self>, Error> {
-            let mut range_start = self.rw_rows.start;
-            for (i, sub_range) in ranges.iter().enumerate() {
-                if sub_range.start < range_start {
-                    log::error!(
-                        "subCS_{} sub_range.start ({}) < range_start ({})",
-                        i,
-                        sub_range.start,
-                        range_start
-                    );
-                    return Err(Error::Synthesis);
-                }
-                if i == ranges.len() - 1 && sub_range.end > self.rw_rows.end {
-                    log::error!(
-                        "subCS_{} sub_range.end ({}) > self.rw_rows.end ({})",
-                        i,
-                        sub_range.end,
-                        self.rw_rows.end
-                    );
-                    return Err(Error::Synthesis);
-                }
-                range_start = sub_range.end;
-                log::debug!(
-                    "subCS_{} rw_rows: {}..{}",
-                    i,
-                    sub_range.start,
-                    sub_range.end
-                );
-            }
-
-            let advice_ptrs = self
-                .advice
-                .iter_mut()
-                .map(|vec| vec.as_mut_ptr())
-                .collect::<Vec<_>>();
-
-            let mut sub_cs = vec![];
-            for sub_range in ranges {
-                let advice = advice_ptrs
-                    .iter()
-                    .map(|ptr| unsafe {
-                        std::slice::from_raw_parts_mut(
-                            ptr.add(sub_range.start),
-                            sub_range.end - sub_range.start,
-                        )
-                    })
-                    .collect::<Vec<&mut [Assigned<F>]>>();
-
-                sub_cs.push(Self {
-                    k: 0,
-                    current_phase: self.current_phase,
-                    advice_vec: self.advice_vec.clone(),
-                    advice,
-                    challenges: self.challenges,
-                    instances: self.instances,
-                    fixed_values: self.fixed_values,
-                    rw_rows: sub_range.clone(),
-                    usable_rows: self.usable_rows,
-                    _marker: Default::default(),
-                });
-            }
-
-            Ok(sub_cs)
-        }
-
-        fn merge(&mut self, _sub_cs: Vec<Self>) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn annotate_column<A, AR>(&mut self, _annotation: A, _column: Column<Any>)
-        where
-            A: FnOnce() -> AR,
-            AR: Into<String>,
-        {
-            // Do nothing
-        }
-
-        /// Get the last assigned value of a cell.
-        fn query_advice(&self, column: Column<Advice>, row: usize) -> Result<F, Error> {
-            if !self.usable_rows.contains(&row) {
-                return Err(Error::not_enough_rows_available(self.k));
-            }
-            if !self.rw_rows.contains(&row) {
-                log::error!("query_advice: {:?}, row: {}", column, row);
-                return Err(Error::Synthesis);
-            }
-            self.advice
-                .get(column.index())
-                .and_then(|v| v.get(row - self.rw_rows.start))
-                .map(|v| v.evaluate())
-                .ok_or(Error::BoundsFailure)
-        }
-
-        fn query_fixed(&self, column: Column<Fixed>, row: usize) -> Result<F, Error> {
-            self.fixed_values
-                .get(column.index())
-                .and_then(|v| v.get(row))
-                .copied()
-                .ok_or(Error::BoundsFailure)
-        }
-
-        fn query_instance(&self, column: Column<Instance>, row: usize) -> Result<Value<F>, Error> {
-            if !self.usable_rows.contains(&row) {
-                return Err(Error::not_enough_rows_available(self.k));
-            }
-
-            self.instances
-                .get(column.index())
-                .and_then(|column| column.get(row))
-                .map(|v| Value::known(*v))
-                .ok_or(Error::BoundsFailure)
-        }
-
-        fn assign_advice<V, VR, A, AR>(
-            &mut self,
-            _: A,
-            column: Column<Advice>,
-            row: usize,
-            to: V,
-        ) -> Result<(), Error>
-        where
-            V: FnOnce() -> Value<VR>,
-            VR: Into<Assigned<F>>,
-            A: FnOnce() -> AR,
-            AR: Into<String>,
-        {
-            // Ignore assignment of advice column in different phase than current one.
-            if self.current_phase.0 < column.column_type().phase.0 {
-                return Ok(());
-            }
-
-            if !self.usable_rows.contains(&row) {
-                return Err(Error::not_enough_rows_available(self.k));
-            }
-
-            if !self.rw_rows.contains(&row) {
-                log::error!("assign_advice: {:?}, row: {}", column, row);
-                return Err(Error::Synthesis);
-            }
-
-            *self
-                .advice
-                .get_mut(column.index())
-                .and_then(|v| v.get_mut(row - self.rw_rows.start))
-                .ok_or(Error::BoundsFailure)? = to().into_field().assign()?;
-
-            Ok(())
-        }
-
-        fn assign_fixed<V, VR, A, AR>(
-            &mut self,
-            _: A,
-            _: Column<Fixed>,
-            _: usize,
-            _: V,
-        ) -> Result<(), Error>
-        where
-            V: FnOnce() -> Value<VR>,
-            VR: Into<Assigned<F>>,
-            A: FnOnce() -> AR,
-            AR: Into<String>,
-        {
-            // We only care about advice columns here
-
-            Ok(())
-        }
-
-        fn copy(
-            &mut self,
-            _: Column<Any>,
-            _: usize,
-            _: Column<Any>,
-            _: usize,
-        ) -> Result<(), Error> {
-            // We only care about advice columns here
-
-            Ok(())
-        }
-
-        fn fill_from_row(
-            &mut self,
-            _: Column<Fixed>,
-            _: usize,
-            _: Value<Assigned<F>>,
-        ) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn get_challenge(&self, challenge: Challenge) -> Value<F> {
-            self.challenges
-                .get(&challenge.index())
-                .cloned()
-                .map(Value::known)
-                .unwrap_or_else(Value::unknown)
-        }
-
-        fn push_namespace<NR, N>(&mut self, _: N)
-        where
-            NR: Into<String>,
-            N: FnOnce() -> NR,
-        {
-            // Do nothing; we don't care about namespaces in this context.
-        }
-
-        fn pop_namespace(&mut self, _: Option<String>) {
-            // Do nothing; we don't care about namespaces in this context.
-        }
-    }
-
+    let _0 = info_span!("witnes calc").entered();
     let (advice, challenges) = {
         let mut advice = vec![
             AdviceSingle::<Scheme::Curve, LagrangeCoeff> {
@@ -543,10 +540,15 @@ where
 
         (advice, challenges)
     };
+    _0.exit();
+
+    let _1 = info_span!("Generate commited ( added to transcript ) lookup polys").entered();
 
     // Sample theta challenge for keeping lookup columns linearly independent
     let theta: ChallengeTheta<_> = transcript.squeeze_challenge_scalar();
+    _1.exit();
 
+    let _2 = info_span!("Get permuted lookup polys").entered();
     let lookups: Vec<Vec<mv_lookup::prover::Prepared<Scheme::Curve>>> = instance
         .iter()
         .zip(advice.iter())
@@ -585,6 +587,9 @@ where
 
     // Sample gamma challenge
     let gamma: ChallengeGamma<_> = transcript.squeeze_challenge_scalar();
+    _2.exit();
+
+    let _2 = info_span!("Generate commited permutation polys").entered();
 
     // Commit to permutations.
     let permutations: Vec<permutation::prover::Committed<Scheme::Curve>> = instance
@@ -605,6 +610,9 @@ where
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    _2.exit();
+
+    let _3 = info_span!("Generate commited lookup polys").entered();
 
     let lookup_commit_time = start_timer!(|| "lookup commit grand sum");
     let lookups: Vec<Vec<mv_lookup::prover::Committed<Scheme::Curve>>> = lookups
@@ -618,13 +626,15 @@ where
         })
         .collect::<Result<Vec<_>, _>>()?;
     end_timer!(lookup_commit_time);
+    _3.exit();
 
+    let _5 = info_span!("Commit to the vanishing argument's random polynomial for blinding h(x_3)")
+        .entered();
     // Commit to the vanishing argument's random polynomial for blinding h(x_3)
     let vanishing = vanishing::Argument::commit(params, domain, &mut rng, transcript)?;
+    _5.exit();
 
-    // Obtain challenge for keeping all separate gates linearly independent
-    let y: ChallengeY<_> = transcript.squeeze_challenge_scalar();
-
+    let _6 = info_span!("Generate the advice polys").entered();
     // Calculate the advice polys
     let advice: Vec<AdviceSingle<Scheme::Curve, Coeff>> = advice
         .into_iter()
@@ -643,7 +653,12 @@ where
             },
         )
         .collect();
+    _6.exit();
 
+    let _7 = info_span!("Evaluate the h(X) polynomial").entered();
+
+    // Obtain challenge for keeping all separate gates linearly independent
+    let y: ChallengeY<_> = transcript.squeeze_challenge_scalar();
     // Evaluate the h(X) polynomial
     let h_poly = pk.ev.evaluate_h(
         pk,
@@ -663,12 +678,18 @@ where
         &lookups,
         &permutations,
     );
+    _7.exit();
 
+    let _8 = info_span!("Construct the vanishing argument's h(X) commitments ").entered();
     // Construct the vanishing argument's h(X) commitments
     let vanishing = vanishing.construct(params, domain, h_poly, &mut rng, transcript)?;
+    _8.exit();
+
+    let _9 = info_span!("Compute x").entered();
 
     let x: ChallengeX<_> = transcript.squeeze_challenge_scalar();
     let xn = x.pow(&[params.n() as u64, 0, 0, 0]);
+    _9.exit();
 
     if P::QUERY_INSTANCE {
         // Compute and hash instance evals for each circuit instance
@@ -692,6 +713,7 @@ where
         }
     }
 
+    let _10 = info_span!("Compute and hash advice evals for the circuit instance").entered();
     // Compute and hash advice evals for each circuit instance
     for advice in advice.iter() {
         // Evaluate polynomials at omega^i x
@@ -711,7 +733,9 @@ where
             transcript.write_scalar(*eval)?;
         }
     }
+    _10.exit();
 
+    let _11 = info_span!("Compute and hash fixed evals").entered();
     // Compute and hash fixed evals (shared across all circuit instances)
     let fixed_evals: Vec<_> = meta
         .fixed_queries
@@ -727,7 +751,9 @@ where
     }
 
     let vanishing = vanishing.evaluate(x, xn, domain, transcript)?;
+    _11.exit();
 
+    let _12 = info_span!("Evaluate permutation, lookups and shuffles at x ").entered();
     // Evaluate common permutation data
     pk.permutation.evaluate(x, transcript)?;
 
@@ -746,6 +772,11 @@ where
                 .collect::<Result<Vec<_>, _>>()
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    _12.exit();
+    let _13 =
+        info_span!("Generate all queries ([`ProverQuery`]) that needs to be sent to prover  ")
+            .entered();
 
     let instances = instance
         .iter()
@@ -794,9 +825,14 @@ where
         .chain(pk.permutation.open(x))
         // We query the h(X) polynomial at x
         .chain(vanishing.open(x));
+    _13.exit();
 
+    let _14 = info_span!("Send the queries to the [`Prover`]  ").entered();
     let prover = P::new(params);
     prover
         .create_proof(rng, transcript, instances)
-        .map_err(|_| Error::ConstraintSystemFailure)
+        .map_err(|_| Error::ConstraintSystemFailure)?;
+    _14.exit();
+
+    Ok(())
 }
