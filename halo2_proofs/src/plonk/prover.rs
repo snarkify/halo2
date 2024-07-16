@@ -11,6 +11,7 @@ use halo2_middleware::zal::{
 };
 use rand_core::RngCore;
 use std::collections::HashMap;
+use tracing::info_span;
 
 /// This creates a proof for the provided `circuit` when given the public
 /// parameters `params` and the proving key [`ProvingKey`] that was
@@ -60,13 +61,19 @@ where
     )?;
     let mut challenges = HashMap::new();
     let phases = prover.phases().to_vec();
-    for phase in phases.iter() {
-        let mut witnesses = Vec::with_capacity(circuits.len());
-        for witness_calc in witness_calcs.iter_mut() {
-            witnesses.push(witness_calc.calc(*phase, &challenges)?);
+
+    {
+        let _s = info_span!("witness calc").entered();
+
+        for phase in phases.iter() {
+            let mut witnesses = Vec::with_capacity(circuits.len());
+            for witness_calc in witness_calcs.iter_mut() {
+                witnesses.push(witness_calc.calc(*phase, &challenges)?);
+            }
+            challenges = prover.commit_phase(*phase, witnesses).unwrap();
         }
-        challenges = prover.commit_phase(*phase, witnesses).unwrap();
     }
+
     Ok(prover.create_proof()?)
 }
 /// This creates a proof for the provided `circuit` when given the public

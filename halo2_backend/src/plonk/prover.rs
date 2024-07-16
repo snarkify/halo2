@@ -5,6 +5,7 @@ use group::Curve;
 use rand_core::RngCore;
 use std::collections::{BTreeSet, HashSet};
 use std::{collections::HashMap, iter};
+use tracing::info_span;
 
 use crate::arithmetic::{eval_polynomial, CurveAffine};
 use crate::plonk::{
@@ -259,10 +260,13 @@ impl<
         // Commit the polynomials of all circuits instances
         // [TRANSCRIPT-2]
 
-        let instances: Vec<InstanceSingle<Scheme::Curve>> = circuits_instances
-            .iter()
-            .map(|instance| commit_instance_fn(instance))
-            .collect::<Result<Vec<_>, _>>()?;
+        let instances: Vec<InstanceSingle<Scheme::Curve>> = {
+            let _s = info_span!("commit_instances").entered();
+            circuits_instances
+                .iter()
+                .map(|instance| commit_instance_fn(instance))
+                .collect::<Result<Vec<_>, _>>()
+        }?;
 
         // Create an structure to hold the advice polynomials and its blinds, it will be filled later in the
         // [`commit_phase`].
@@ -503,6 +507,7 @@ impl<
     /// - 12. Evaluate permutation, lookups and shuffles at x
     /// - 13. Generate all queries ([`ProverQuery`])
     /// - 14. Send the queries to the [`Prover`]
+    #[tracing::instrument(skip_all)]
     pub fn create_proof(mut self) -> Result<(), Error>
     where
         Scheme::Scalar: WithSmallOrderMulGroup<3> + FromUniformBytes<64>,
@@ -524,14 +529,17 @@ impl<
             .collect::<Vec<_>>();
 
         // 1. Generate commited ( added to transcript ) lookup polys  ---------------------------------------
+        let _1 = info_span!("Generate commited ( added to transcript ) lookup polys").entered();
 
         // Sample theta challenge for keeping lookup columns linearly independent
         // [TRANSCRIPT-5]
 
         let theta: ChallengeTheta<_> = self.transcript.squeeze_challenge_scalar();
 
+        _1.exit();
         // 2. Get permuted lookup polys
         // [TRANSCRIPT-6]
+        let _2 = info_span!("Get permuted lookup polys").entered();
 
         let mut lookups_fn =
             |instance: &InstanceSingle<Scheme::Curve>,
@@ -557,14 +565,16 @@ impl<
                     })
                     .collect::<Result<Vec<_>, _>>()
             };
-        let permuted_lookups: Vec<Vec<lookup::prover::Permuted<Scheme::Curve>>> = instances
-            .iter()
-            .zip(advices.iter())
-            .map(|(instance, advice)| -> Result<Vec<_>, Error> {
-                // Construct and commit to permuted values for each lookup
-                lookups_fn(instance, advice)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let permuted_lookups: Vec<Vec<lookup::prover::Permuted<Scheme::Curve>>> = {
+            instances
+                .iter()
+                .zip(advices.iter())
+                .map(|(instance, advice)| -> Result<Vec<_>, Error> {
+                    // Construct and commit to permuted values for each lookup
+                    lookups_fn(instance, advice)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        }?;
 
         // Sample beta challenge
         // [TRANSCRIPT-7]
@@ -573,31 +583,38 @@ impl<
         // Sample gamma challenge
         // [TRANSCRIPT-8]
         let gamma: ChallengeGamma<_> = self.transcript.squeeze_challenge_scalar();
+        _2.exit();
 
         // 2. Generate commited permutation polys  -----------------------------------------
         // [TRANSCRIPT-9]
-        let permutations_commited: Vec<permutation::prover::Committed<Scheme::Curve>> = instances
-            .iter()
-            .zip(advices.iter())
-            .map(|(instance, advice)| {
-                permutation_commit(
-                    &self.engine,
-                    &cs.permutation,
-                    params,
-                    pk,
-                    &pk.permutation,
-                    &advice.advice_polys,
-                    &pk.fixed_values,
-                    &instance.instance_values,
-                    beta,
-                    gamma,
-                    &mut rng,
-                    self.transcript,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let _2 = info_span!("Generate commited permutation polys").entered();
+
+        let permutations_commited: Vec<permutation::prover::Committed<Scheme::Curve>> = {
+            instances
+                .iter()
+                .zip(advices.iter())
+                .map(|(instance, advice)| {
+                    permutation_commit(
+                        &self.engine,
+                        &cs.permutation,
+                        params,
+                        pk,
+                        &pk.permutation,
+                        &advice.advice_polys,
+                        &pk.fixed_values,
+                        &instance.instance_values,
+                        beta,
+                        gamma,
+                        &mut rng,
+                        self.transcript,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        }?;
+        _2.exit();
 
         // 3. Generate commited lookup polys ----------------------------------------------------------
+        let _3 = info_span!("Generate commited lookup polys").entered();
 
         // [TRANSCRIPT-10]
         let lookups_commited: Vec<Vec<lookup::prover::Committed<Scheme::Curve>>> = permuted_lookups
@@ -620,8 +637,10 @@ impl<
                     .collect::<Result<Vec<_>, _>>()
             })
             .collect::<Result<Vec<_>, _>>()?;
+        _3.exit();
 
         // 4. Generate commited shuffle polys  -------------------------------------------------------
+        let _4 = info_span!("Generate commited shuffle polys").entered();
 
         // [TRANSCRIPT-11]
         let shuffles_commited: Vec<Vec<shuffle::prover::Committed<Scheme::Curve>>> = instances
@@ -651,9 +670,13 @@ impl<
                     .collect::<Result<Vec<_>, _>>()
             })
             .collect::<Result<Vec<_>, _>>()?;
+        _4.exit();
 
         // 5. Commit to the vanishing argument's random polynomial for blinding h(x_3) -------------------
         // [TRANSCRIPT-12]
+        let _5 =
+            info_span!("Commit to the vanishing argument's random polynomial for blinding h(x_3)")
+                .entered();
         let vanishing = vanishing::Argument::commit(
             &self.engine.msm_backend,
             params,
@@ -661,8 +684,10 @@ impl<
             &mut rng,
             self.transcript,
         )?;
+        _5.exit();
 
         // 6. Generate the advice polys ------------------------------------------------------------------
+        let _6 = info_span!("Generate the advice polys").entered();
 
         let advice: Vec<AdviceSingle<Scheme::Curve, Coeff>> = advices
             .into_iter()
@@ -681,8 +706,10 @@ impl<
                 },
             )
             .collect();
+        _6.exit();
 
         // 7. Evaluate the h(X) polynomial -----------------------------------------------------------
+        let _7 = info_span!("Evaluate the h(X) polynomial").entered();
 
         // Obtain challenge for keeping all separate gates linearly independent
         // [TRANSCRIPT-13]
@@ -707,9 +734,11 @@ impl<
             &shuffles_commited,
             &permutations_commited,
         );
+        _7.exit();
 
         // 8. Construct the vanishing argument's h(X) commitments --------------------------------------
         // [TRANSCRIPT-14]
+        let _8 = info_span!("Construct the vanishing argument's h(X) commitments ").entered();
         let vanishing = vanishing.construct(
             &self.engine,
             params,
@@ -718,9 +747,11 @@ impl<
             &mut rng,
             self.transcript,
         )?;
+        _8.exit();
 
         // 9. Compute x  --------------------------------------------------------------------------------
         // [TRANSCRIPT-15]
+        let _9 = info_span!("Compute x").entered();
         let x: ChallengeX<_> = self.transcript.squeeze_challenge_scalar();
 
         let x_pow_n = x.pow([params.n()]);
@@ -747,9 +778,11 @@ impl<
                 }
             }
         }
+        _9.exit();
 
         // 10. Compute and hash advice evals for the circuit instance ------------------------------------
         // [TRANSCRIPT-17]
+        let _10 = info_span!("Compute and hash advice evals for the circuit instance").entered();
         for advice in advice.iter() {
             // Evaluate polynomials at omega^i x
             let advice_evals: Vec<_> = cs
@@ -768,8 +801,10 @@ impl<
                 self.transcript.write_scalar(*eval)?;
             }
         }
+        _10.exit();
 
         // 11. Compute and hash fixed evals -----------------------------------------------------------
+        let _11 = info_span!("Compute and hash fixed evals").entered();
         let fixed_evals: Vec<_> = cs
             .fixed_queries
             .iter()
@@ -786,8 +821,10 @@ impl<
 
         // [TRANSCRIPT-19]
         let vanishing = vanishing.evaluate(x, x_pow_n, domain, self.transcript)?;
+        _11.exit();
 
         // 12. Evaluate permutation, lookups and shuffles at x -----------------------------------
+        let _12 = info_span!("Evaluate permutation, lookups and shuffles at x ").entered();
 
         // Evaluate common permutation data
         // [TRANSCRIPT-20]
@@ -827,7 +864,11 @@ impl<
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
+        _12.exit();
         // 13. Generate all queries ([`ProverQuery`]) that needs to be sent to prover  --------------------
+        let _13 =
+            info_span!("Generate all queries ([`ProverQuery`]) that needs to be sent to prover  ")
+                .entered();
 
         let queries = instances
             // group the instance, advice, permutation, lookups and shuffles
@@ -880,12 +921,15 @@ impl<
             // We query the h(X) polynomial at x
             .chain(vanishing.open(x));
 
+        _13.exit();
         // 14. Send the queries to the [`Prover`]  ------------------------------------------------
+        let _14 = info_span!("Send the queries to the [`Prover`]  ").entered();
 
         let prover = P::new(params);
         prover
             .create_proof_with_engine(&self.engine.msm_backend, rng, self.transcript, queries)
             .map_err(|_| Error::ConstraintSystemFailure)?;
+        _14.exit();
 
         Ok(())
     }
