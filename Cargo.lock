@@ -180,6 +180,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d696c370c750c948ada61c69a0ee2cbbb9c50b1019ddb86d9317157a99c2cae"
 
 [[package]]
+name = "bls12_381"
+version = "0.8.0"
+source = "git+https://github.com/privacy-scaling-explorations/bls12_381?tag=v2023_10_26#9e59592178de7cbfae67cdd62c3a910ef3a99f17"
+dependencies = [
+ "ff",
+ "group",
+ "pairing",
+ "pasta_curves",
+ "rand_core",
+ "subtle",
+]
+
+[[package]]
 name = "bstr"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -836,7 +849,7 @@ dependencies = [
  "ff",
  "group",
  "halo2_proofs",
- "halo2curves",
+ "halo2curves 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static",
  "plotters",
  "pprof",
@@ -869,7 +882,7 @@ dependencies = [
  "group",
  "gumdrop",
  "halo2_legacy_pdqsort",
- "halo2curves",
+ "halo2curves 0.1.0 (git+https://github.com/scroll-tech/halo2curves?branch=use_pairing)",
  "lazy_static",
  "log",
  "maybe-rayon",
@@ -903,8 +916,28 @@ dependencies = [
  "paste",
  "rand",
  "rand_core",
- "serde",
- "serde_arrays",
+ "static_assertions",
+ "subtle",
+]
+
+[[package]]
+name = "halo2curves"
+version = "0.1.0"
+source = "git+https://github.com/scroll-tech/halo2curves?branch=use_pairing#1a1fdf259915449f937f35d80965ef69f9ad8e20"
+dependencies = [
+ "blake2b_simd",
+ "bls12_381",
+ "ff",
+ "group",
+ "lazy_static",
+ "maybe-rayon",
+ "num-bigint",
+ "num-traits",
+ "pairing",
+ "pasta_curves",
+ "paste",
+ "rand",
+ "rand_core",
  "static_assertions",
  "subtle",
 ]
@@ -1247,6 +1280,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 
 [[package]]
+name = "pairing"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81fec4625e73cf41ef4bb6846cafa6d44736525f442ba45e407c4a000a13996f"
+dependencies = [
+ "group",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1381,7 +1423,7 @@ name = "poseidon"
 version = "0.2.0"
 source = "git+https://github.com/scroll-tech/poseidon.git?branch=main#5787dd3d2ce7a9e9601a035c396ac0c03449b54d"
 dependencies = [
- "halo2curves",
+ "halo2curves 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "subtle",
 ]
 
@@ -1661,18 +1703,6 @@ name = "serde"
 version = "1.0.136"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce31e24b01e1e524df96f1c2fdd054405f8d7376249a5110886fb4b658484789"
-dependencies = [
- "serde_derive",
-]
-
-[[package]]
-name = "serde_arrays"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38636132857f68ec3d5f3eb121166d2af33cb55174c4d5ff645db6165cbef0fd"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "serde_cbor"
