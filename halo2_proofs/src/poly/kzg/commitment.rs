@@ -119,6 +119,11 @@ where
             g_lagrange
         };
 
+        #[cfg(feature = "cusnark")]
+        if env::var("ENABLE_CUSNARK").is_ok() {
+            cusnark::msm_init();
+        }
+
         let g2 = <E::G2Affine as PrimeCurveAffine>::generator();
         let s_g2 = (g2 * s).into();
 
